@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="ru">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Логин</title>
+    </head>
+    <body>
+        <style>
+            body{
+            font-family: Arial, Helvetica, sans-serif;
+            }
+			.send-button{
+				width: 120px;
+				height: 45px;
+				border-radius: 25px;
+				font-family: Arial, Helvetica, sans-serif;
+				border: 0;
+				background-color: #00ff00;
+				font-size: 20px;
+                margin-top: 50px;
+                margin-left: 270px;
+			}
+            input{
+				width: 400px;
+				height: 40px;
+				font-family: Arial, Helvetica, sans-serif;
+				font-size: 25px;
+            }
+            form{
+                width: 420px;
+                height: 235px;
+				border-radius: 25px;
+				font-family: Arial, Helvetica, sans-serif;
+				border: 0;
+				background-color: rgb(0, 180, 255);
+                border-color: rgb(0, 200, 255);
+                margin-top: 60px;
+            }
+            .top{
+                margin-top: 15px;
+            }
+            p{
+                color: red;
+                font-size: 20px;
+                margin-left: 10px;
+                margin-bottom: 0px;
+            }
+        </style>
+        <center>
+        <form action="http://localhost:5000/login" method="post">
+            <input type="text" name="login" placeholder="Введите имя пользователя" class="top">
+            <br>
+            <input type="password" name="password" placeholder="Введите пароль">
+            <br>
+            <p>{{.}}</p>
+            <button type="submit" class="send-button">Вход</button>
+        </form>
+        </center>
+    </body>
+</html>
