@@ -3,10 +3,12 @@ package main
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"html/template"
 	"log"
 	"net/http"
+	"os"
 	"strconv"
 	"time"
 
@@ -18,12 +20,15 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 )
 
-const hmacSampleSecret = "qwertyytrewq"
+const (
+	hmacSampleSecret = "qwertyytrewq"
+	timeLayout       = "2006-01-02 15:04:05"
+)
 
 var (
 	db *sql.DB
 
-	regPage, loginPage, mainPg, exprPage *template.Template
+	regPage, loginPage, mainPg, exprPage, configPage *template.Template
 )
 
 type User struct {
@@ -47,6 +52,7 @@ func loadTemplates() {
 	loginPage, _ = template.ParseFiles("html/login.html")
 	mainPg, _ = template.ParseFiles("html/index.html")
 	exprPage, _ = template.ParseFiles("html/expressions.html")
+	configPage, _ = template.ParseFiles("html/eidtConfig.html")
 }
 
 func (u User) ComparePassword(u2 User) error {
@@ -111,12 +117,12 @@ func selectUser(ctx context.Context, db *sql.DB, name string) (User, error) {
 	return user, err
 }
 
-func insertExpression(ctx context.Context, db *sql.DB, userID int64, expression string) (int64, error) {
+func insertExpression(ctx context.Context, db *sql.DB, userID int64, expression string, startTime string) (int64, error) {
 	var q = `
-	ISERT INTO expressions (userID, expression, status) values ($1, $2, $3)
+	INSERT INTO expressions (userID, expression, status, startTime) values ($1, $2, $3, $4)
 	`
 
-	result, err := db.ExecContext(ctx, q, userID, expression, http.StatusProcessing)
+	result, err := db.ExecContext(ctx, q, userID, expression, http.StatusProcessing, startTime)
 	if err != nil {
 		return 0, err
 	}
@@ -129,31 +135,31 @@ func insertExpression(ctx context.Context, db *sql.DB, userID int64, expression 
 	return id, nil
 }
 
-func updateExpression(ctx context.Context, db *sql.DB, id int64, result float32, status int) error {
+func updateExpression(ctx context.Context, db *sql.DB, id int64, result float32, endTime string, status int) error {
 	var q = `
-	UPDATE expressions SET result = $1, status = $2 WHERE id = $3
+	UPDATE expressions SET result = $1, status = $2, endTime = $3 WHERE id = $4
 	`
 
-	_, err := db.ExecContext(ctx, q, result, status, id)
+	_, err := db.ExecContext(ctx, q, result, status, endTime, id)
 
 	return err
 }
 
-func getExpressions(ctx context.Context, db *sql.DB, userID int64) chan Expression {
+func getExpressions(db *sql.DB, userID int64) chan Expression {
 	var (
 		Status                   int64
 		Expr, StartTime, EndTime string
-		q                        = `
-		SELECT status, expression 
-		`
+		Result                   float32
+		q                        = `SELECT status, expression, result, startTime, endTime FROM expressions WHERE userID = $1`
 	)
 	out := make(chan Expression)
 
 	go func() {
 		defer close(out)
-		rows := db.QueryRowContext(ctx, q)
-		for rows.Scan(&Status, &Expr, StartTime, &EndTime) == nil {
-			out <- Expression{Status: Status, Expr: Expr, StartTime: StartTime, EndTime: EndTime}
+		rows, _ := db.Query(q, userID)
+		for rows.Next() {
+			rows.Scan(&Status, &Expr, &Result, &StartTime, &EndTime)
+			out <- Expression{Status: Status, Expr: Expr, Result: Result, StartTime: StartTime, EndTime: EndTime}
 		}
 	}()
 
@@ -188,6 +194,13 @@ func getID(token string) (int64, error) {
 	}
 
 	id, _ := strconv.Atoi(parsedToken.Claims.(jwt.MapClaims)["id"].(string))
+
+	var q = "SELECT id FROM users WHERE id=$1"
+	err = db.QueryRowContext(context.TODO(), q, id).Scan(&id)
+
+	if err != nil {
+		return 0, err
+	}
 
 	return int64(id), nil
 }
@@ -246,6 +259,7 @@ func Reg(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			tx.Rollback()
 			log.Printf("register failed. %v", err)
+			regPage.Execute(w, "this username is already taken")
 			return
 		}
 
@@ -264,6 +278,7 @@ func Reg(w http.ResponseWriter, r *http.Request) {
 
 		log.Printf("auth succes. token=%v", token)
 		tx.Commit()
+		http.Redirect(w, r, "/", http.StatusMovedPermanently)
 	}
 
 	regPage.Execute(w, nil)
@@ -316,7 +331,11 @@ func login(w http.ResponseWriter, r *http.Request) {
 
 func mainPage(w http.ResponseWriter, r *http.Request) {
 	token := checkAuthorization(w, r)
-	id, _ := getID(token)
+	id, err := getID(token)
+	if err != nil {
+		http.Redirect(w, r, "/login", http.StatusMovedPermanently)
+	}
+
 	mainPg.Execute(w, nil)
 
 	r.ParseForm()
@@ -326,7 +345,7 @@ func mainPage(w http.ResponseWriter, r *http.Request) {
 		ctx := context.TODO()
 		expression := expression[0]
 
-		insertExpression(ctx, db, id, expression)
+		insertExpression(ctx, db, id, expression, time.Now().Format(timeLayout))
 		conn, err := grpc.Dial("localhost:8080", grpc.WithTransportCredentials(insecure.NewCredentials()))
 
 		if err != nil {
@@ -334,35 +353,31 @@ func mainPage(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		defer conn.Close()
-
 		client := pb.NewCalculatorServiceClient(conn)
 
-		id, err := insertExpression(ctx, db, id, expression)
-		if err != nil {
-			log.Printf("%v", err)
-			return
-		}
+		go func(id int64) {
 
-		resp, err := client.Solve(ctx, &pb.ExpressionRequest{Expr: expression})
-		if err != nil {
-			log.Printf("%v", err)
-		}
+			defer conn.Close()
+			resp, err := client.Solve(ctx, &pb.ExpressionRequest{Expr: expression})
+			if err != nil {
+				log.Printf("%v", err)
+			}
 
-		updateExpression(ctx, db, id, resp.Result, int(resp.Status))
-		if err != nil {
-			log.Printf("%v", err)
-		}
+			updateExpression(ctx, db, id, resp.Result, resp.EndTime, int(resp.Status))
+			if err != nil {
+				log.Printf("%v", err)
+			}
+		}(id)
 	}
 }
 
-// Доработать
-/*func editConfig(w http.ResponseWriter, r *http.Request) {
+func editConfig(w http.ResponseWriter, r *http.Request) {
 	type Config struct {
-		plus     int64 `json:"+"`
-		minus    int64 `json:"-"`
-		multiple int64 `json:"*"`
-		division int64 `json:"/"`
+		Plus         int64 `json:"+"`
+		Minus        int64 `json:"-"`
+		Multiple     int64 `json:"*"`
+		Division     int64 `json:"/"`
+		NumOfWorkers int64 `json:"NumOfWorkers"`
 	}
 	var cfg Config
 	r.ParseForm()
@@ -381,37 +396,65 @@ func mainPage(w http.ResponseWriter, r *http.Request) {
 
 	client := pb.NewCalculatorServiceClient(conn)
 
-	if val, ok := r.Form["+"]; ok{
-		newVal, err:=strconv.Atoi(val[0])
-		if err != nil && newVal>=0{
-			cfg.plus = int64(newVal)
+	if val, ok := r.Form["+"]; ok {
+		newVal, err := strconv.Atoi(val[0])
+		if err == nil && newVal >= 0 {
+			cfg.Plus = int64(newVal)
 		}
 	}
 
-	if val, ok := r.Form["-"]; ok{
-		newVal, err:=strconv.Atoi(val[0])
-		if err != nil && newVal>=0{
-			cfg.minus = int64(newVal)
+	if val, ok := r.Form["-"]; ok {
+		newVal, err := strconv.Atoi(val[0])
+		if err == nil && newVal >= 0 {
+			cfg.Minus = int64(newVal)
 		}
 	}
 
-	if val, ok := r.Form["*"]; ok{
-		newVal, err:=strconv.Atoi(val[0])
-		if err != nil && newVal>=0{
-			cfg.multiple = int64(newVal)
+	if val, ok := r.Form["*"]; ok {
+		newVal, err := strconv.Atoi(val[0])
+		if err == nil && newVal >= 0 {
+			cfg.Multiple = int64(newVal)
 		}
 	}
 
-	if val, ok := r.Form["/"]; ok{
-		newVal, err:=strconv.Atoi(val[0])
-		if err != nil && newVal>=0{
-			cfg.division = int64(newVal)
+	if val, ok := r.Form["/"]; ok {
+		newVal, err := strconv.Atoi(val[0])
+		if err == nil && newVal >= 0 {
+			cfg.Division = int64(newVal)
 		}
 	}
-} */
+
+	if val, ok := r.Form["/"]; ok {
+		newVal, err := strconv.Atoi(val[0])
+		if err == nil && newVal >= 0 {
+			cfg.Division = int64(newVal)
+		}
+	}
+
+	if val, ok := r.Form["NumOfWorkers"]; ok {
+		newVal, err := strconv.Atoi(val[0])
+		if err == nil && newVal >= 0 {
+			cfg.NumOfWorkers = int64(newVal)
+		}
+	}
+
+	client.Update(context.TODO(), &pb.ConfigRequest{Plus: cfg.Plus, Minus: cfg.Minus, Multiple: cfg.Multiple, Division: cfg.Division, NumOfWorkers: cfg.NumOfWorkers})
+
+	configPage.Execute(w, nil)
+}
 
 func expressionList(w http.ResponseWriter, r *http.Request) {
-	exprPage.Execute(w, nil)
+	var expressions = make([]Expression, 0)
+
+	token := checkAuthorization(w, r)
+	id, _ := getID(token)
+	in := getExpressions(db, id)
+
+	for expression := range in {
+		expressions = append(expressions, expression)
+	}
+
+	exprPage.Execute(w, expressions)
 }
 
 func main() {
@@ -441,7 +484,7 @@ func main() {
 	mux.HandleFunc("/register", Reg)
 	mux.HandleFunc("/login", login)
 	mux.HandleFunc("/", mainPage)
-	// mux.HandleFunc("/config", editConfig)
+	mux.HandleFunc("/config", editConfig)
 	mux.HandleFunc("/expressions", expressionList)
 
 	log.Println("server started")

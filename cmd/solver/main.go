@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"net"
@@ -22,8 +23,31 @@ var (
 	currNum      int64          = 0
 )
 
-func loadConfig(fileName string) {
+type Config struct {
+	Plus     int64 `json:"+"`
+	Minus    int64 `json:"-"`
+	Multiple int64 `json:"*"`
+	Division int64 `json:"/"`
+}
 
+func loadConfig(fileName string) {
+	var cfg Config
+
+	data, err := os.ReadFile("data/" + fileName)
+	if err != nil {
+		config['+'] = 100
+		config['-'] = 100
+		config['*'] = 100
+		config['/'] = 100
+		return
+	}
+
+	json.Unmarshal(data, &cfg)
+
+	config['+'] = cfg.Plus
+	config['-'] = cfg.Minus
+	config['*'] = cfg.Multiple
+	config['/'] = cfg.Division
 }
 
 type Server struct {
@@ -74,7 +98,13 @@ func (s *Server) Update(ctx context.Context, r *pb.ConfigRequest) (*pb.Null, err
 	config['/'] = r.Division
 	numOfWorkers = r.NumOfWorkers
 
-	cfg := []byte(fmt.Sprintf("{ \"+\": %d, \"-\": %d, \"*\": %d, \"/\": %d, \"NumOfWorkers\": %d,}", config['+'], config['-'], config['*'], config['/'], numOfWorkers))
+	cfg := []byte(fmt.Sprintf(`{ 
+	"+": %d,
+	"-": %d,
+	"*": %d,
+	"/": %d,
+	"NumOfWorkers": %d
+}`, config['+'], config['-'], config['*'], config['/'], numOfWorkers))
 	os.WriteFile("data/config.json", cfg, 0644)
 
 	return nil, nil

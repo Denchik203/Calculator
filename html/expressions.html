@@ -27,7 +27,7 @@
     <button onclick="location.href='http://localhost:8080/';">На главную</button>
     <h1>Список выражений:</h1>
     <table>
-    <tr><th>id</th><th>Статус</th><th>Выражение</th><th>Результат</th><th>Дата создания</th><th>Дата окончания</th></tr>
+    <tr><th>Статус</th><th>Выражение</th><th>Результат</th><th>Дата создания</th><th>Дата окончания</th></tr>
     {{range .}}
         <tr><td>{{.Status}}</td><td>{{.Expr}}</td><td>{{.Result}}</td><td>{{.StartTime}}</td><td>{{.EndTime}}</td></tr>
     {{end}}
