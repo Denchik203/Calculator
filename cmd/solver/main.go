@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"sync"
 	"time"
 
 	pb "github.com/Denchik203/Calculator/proto"
@@ -59,13 +60,16 @@ func NewServer() *Server {
 }
 
 func (s *Server) Solve(ctx context.Context, r *pb.ExpressionRequest) (*pb.ResultResponse, error) {
+	var mux sync.Mutex
 	resp := &pb.ResultResponse{Status: http.StatusProcessing}
 
 	for currNum >= numOfWorkers {
 		time.Sleep(time.Millisecond * 500)
 	}
 
+	mux.Lock()
 	currNum++
+	mux.Unlock()
 
 	result, err := arithmetic.Parse(r.Expr)
 	if err != nil {
@@ -82,7 +86,9 @@ func (s *Server) Solve(ctx context.Context, r *pb.ExpressionRequest) (*pb.Result
 
 	<-time.After(timeOfWorking)
 
+	mux.Lock()
 	currNum--
+	mux.Unlock()
 
 	resp.Result = float32(result.(float64))
 	resp.Status = http.StatusOK

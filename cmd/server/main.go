@@ -41,7 +41,7 @@ type User struct {
 type Expression struct {
 	Status    int64
 	Expr      string
-	Result    float32
+	Result    string
 	StartTime string
 	EndTime   string
 }
@@ -58,11 +58,9 @@ func loadTemplates() {
 func (u User) ComparePassword(u2 User) error {
 	err := compare(u2.Password, u.OriginPassword)
 	if err != nil {
-		log.Println("auth fail")
 		return err
 	}
 
-	log.Println("auth success")
 	return nil
 }
 
@@ -119,10 +117,10 @@ func selectUser(ctx context.Context, db *sql.DB, name string) (User, error) {
 
 func insertExpression(ctx context.Context, db *sql.DB, userID int64, expression string, startTime string) (int64, error) {
 	var q = `
-	INSERT INTO expressions (userID, expression, status, startTime) values ($1, $2, $3, $4)
+	INSERT INTO expressions (userID, expression, status, startTime, endTime) values ($1, $2, $3, $4, $5)
 	`
 
-	result, err := db.ExecContext(ctx, q, userID, expression, http.StatusProcessing, startTime)
+	result, err := db.ExecContext(ctx, q, userID, expression, http.StatusProcessing, startTime, "")
 	if err != nil {
 		return 0, err
 	}
@@ -156,10 +154,17 @@ func getExpressions(db *sql.DB, userID int64) chan Expression {
 
 	go func() {
 		defer close(out)
-		rows, _ := db.Query(q, userID)
+		rows, err := db.Query(q, userID)
+		if err != nil {
+
+		}
 		for rows.Next() {
 			rows.Scan(&Status, &Expr, &Result, &StartTime, &EndTime)
-			out <- Expression{Status: Status, Expr: Expr, Result: Result, StartTime: StartTime, EndTime: EndTime}
+			if Status == 102 {
+				out <- Expression{Status: Status, Expr: Expr, Result: "-", StartTime: StartTime, EndTime: EndTime}
+			} else {
+				out <- Expression{Status: Status, Expr: Expr, Result: fmt.Sprint(Result), StartTime: StartTime, EndTime: EndTime}
+			}
 		}
 	}()
 
@@ -169,7 +174,6 @@ func getExpressions(db *sql.DB, userID int64) chan Expression {
 func generate(s string) string {
 	saltedBytes := []byte(s)
 	hashedBytes, _ := bcrypt.GenerateFromPassword(saltedBytes, bcrypt.DefaultCost)
-	log.Println(hashedBytes)
 	hash := string(hashedBytes[:])
 	return hash
 }
@@ -276,7 +280,6 @@ func Reg(w http.ResponseWriter, r *http.Request) {
 			Expires: time.Now().Add(time.Hour * 24),
 		})
 
-		log.Printf("auth succes. token=%v", token)
 		tx.Commit()
 		http.Redirect(w, r, "/", http.StatusMovedPermanently)
 	}
@@ -345,7 +348,10 @@ func mainPage(w http.ResponseWriter, r *http.Request) {
 		ctx := context.TODO()
 		expression := expression[0]
 
-		insertExpression(ctx, db, id, expression, time.Now().Format(timeLayout))
+		id, err = insertExpression(ctx, db, id, expression, time.Now().Format(timeLayout))
+		if err != nil {
+			log.Printf("%v", err)
+		}
 		conn, err := grpc.Dial("localhost:8080", grpc.WithTransportCredentials(insecure.NewCredentials()))
 
 		if err != nil {
